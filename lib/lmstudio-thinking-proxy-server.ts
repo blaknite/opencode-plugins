@@ -2,12 +2,8 @@
 // Intercepts LM Studio responses and moves tool calls from reasoning_content
 // into proper tool_calls structures.
 
-process.on("uncaughtException", (err) => {
-  Bun.write("/tmp/lmstudio-proxy-error.log", `${new Date().toISOString()} uncaughtException: ${err?.stack || err}\n`, { append: true })
-})
-process.on("unhandledRejection", (err: any) => {
-  Bun.write("/tmp/lmstudio-proxy-error.log", `${new Date().toISOString()} unhandledRejection: ${err?.stack || err}\n`, { append: true })
-})
+process.on("uncaughtException", () => {})
+process.on("unhandledRejection", () => {})
 
 const UPSTREAM = process.argv[2]
 const PORT = parseInt(process.argv[3] || "11435")
@@ -135,16 +131,20 @@ Bun.serve({
     let reasoningBuffer = ""
     let toolCallDetected = false
     let toolCallStreaming = false
-    let toolCallComplete = false
     let templateChunk: any = null
     let lineBuffer = ""
     let hasContent = false
     let toolCallId = ""
-    let emittedArgs = ""
     let toolCallIndex = 0
+    let toolCallsEmitted = 0
+
+    function emit(ctrl: ReadableStreamDefaultController, raw: string) {
+      ctrl.enqueue(encoder.encode(raw))
+    }
 
     function emitChunk(ctrl: ReadableStreamDefaultController, data: any) {
-      ctrl.enqueue(encoder.encode("data: " + JSON.stringify(data) + "\n\n"))
+      const raw = "data: " + JSON.stringify(data) + "\n\n"
+      emit(ctrl, raw)
     }
 
     function getBase() {
@@ -158,16 +158,15 @@ Bun.serve({
 
     // State machine for parsing XML tool calls incrementally
     // States: idle -> sawFunction -> inParam -> done
+    // Resets to idle after each </tool_call> to handle multiple calls
     let parseState: "idle" | "sawFunction" | "inParam" | "done" = "idle"
-    let parsedName = ""
     let currentParamName = ""
     let paramCount = 0
-    let scanPos = 0 // how far we've scanned in reasoningBuffer
+    let scanPos = 0
 
     function emitToolName(ctrl: ReadableStreamDefaultController, name: string) {
       toolCallStreaming = true
       toolCallId = `proxy_call_${++callCounter}`
-      parsedName = name
 
       emitChunk(ctrl, {
         ...getBase(),
@@ -203,14 +202,18 @@ Bun.serve({
     }
 
     function emitParam(ctrl: ReadableStreamDefaultController, key: string, value: string) {
-      // Build a JSON fragment that concatenates with previous ones
-      // First param: '{"key":"value"'   (open brace, no close)
-      // Subsequent:  ',"key":"value"'   (comma-separated)
       const escapedValue = JSON.stringify(value)
       const prefix = paramCount === 0 ? "{" : ","
       const fragment = `${prefix}${JSON.stringify(key)}:${escapedValue}`
       paramCount++
       emitArgDelta(ctrl, fragment)
+    }
+
+    function resetToolCallState() {
+      parseState = "idle"
+      currentParamName = ""
+      paramCount = 0
+      toolCallIndex++
     }
 
     function tryParseIncremental(ctrl: ReadableStreamDefaultController) {
@@ -220,7 +223,6 @@ Bun.serve({
 
       while (scanPos < buf.length) {
         if (parseState === "idle") {
-          // Look for <function=name>
           const funcIdx = buf.indexOf("<function=", scanPos)
           if (funcIdx === -1) break
           const closeIdx = buf.indexOf(">", funcIdx + 10)
@@ -234,13 +236,10 @@ Bun.serve({
         }
 
         if (parseState === "sawFunction" || parseState === "inParam") {
-          // Check for </function> first (end of params)
           const funcEndIdx = buf.indexOf("</function>", scanPos)
           const paramIdx = buf.indexOf("<parameter=", scanPos)
 
-          // If </function> comes before next param (or no more params), we're done
           if (funcEndIdx !== -1 && (paramIdx === -1 || funcEndIdx < paramIdx)) {
-            // Close the arguments JSON
             if (paramCount > 0) {
               emitArgDelta(ctrl, "}")
             } else {
@@ -248,6 +247,19 @@ Bun.serve({
             }
             parseState = "done"
             scanPos = funcEndIdx + 11
+            toolCallsEmitted++
+
+            // Look for </tool_call> then check for another <tool_call>
+            const tcEndIdx = buf.indexOf("</tool_call>", scanPos)
+            if (tcEndIdx !== -1) {
+              scanPos = tcEndIdx + 12
+              const nextTcIdx = buf.indexOf("<tool_call>", scanPos)
+              if (nextTcIdx !== -1) {
+                scanPos = nextTcIdx + 11
+                resetToolCallState()
+                continue
+              }
+            }
             break
           }
 
@@ -258,15 +270,12 @@ Bun.serve({
           const paramName = buf.slice(paramIdx + 11, paramCloseIdx)
           currentParamName = paramName
 
-          // Now find the closing </parameter>
           const paramEndIdx = buf.indexOf("</parameter>", paramCloseIdx + 1)
           if (paramEndIdx === -1) {
-            // Haven't received the full value yet
             parseState = "inParam"
             break
           }
 
-          // Extract value between > and </parameter>, strip leading/trailing newlines
           let value = buf.slice(paramCloseIdx + 1, paramEndIdx)
           if (value.startsWith("\n")) value = value.slice(1)
           if (value.endsWith("\n")) value = value.slice(0, -1)
@@ -281,39 +290,44 @@ Bun.serve({
       }
     }
 
-    function finishToolCall(ctrl: ReadableStreamDefaultController) {
-      if (toolCallComplete) return
+    let finishedEmitted = false
 
+    function finishAllToolCalls(ctrl: ReadableStreamDefaultController) {
+      if (finishedEmitted) return
       // Try to parse anything remaining
       tryParseIncremental(ctrl)
 
       // If we never started streaming, try the full parser as fallback
       if (!toolCallStreaming) {
         const toolCalls = parseToolCalls(reasoningBuffer)
-        if (toolCalls.length > 0) {
-          const tc = toolCalls[0]
+        for (let i = 0; i < toolCalls.length; i++) {
+          const tc = toolCalls[i]
+          if (i > 0) resetToolCallState()
           emitToolName(ctrl, tc.name)
           emitArgDelta(ctrl, tc.arguments)
+          toolCallsEmitted++
         }
-      } else if (parseState !== "done") {
+      } else if (parseState !== "done" && parseState !== "idle") {
         // Parser didn't finish cleanly -- close the args JSON if we started it
         if (paramCount > 0) {
           emitArgDelta(ctrl, "}")
         } else {
           emitArgDelta(ctrl, "{}")
         }
+        toolCallsEmitted++
       }
 
-      toolCallComplete = true
-
-      emitChunk(ctrl, {
-        ...getBase(),
-        choices: [{
-          index: 0,
-          delta: {},
-          finish_reason: "tool_calls",
-        }],
-      })
+      if (toolCallsEmitted > 0) {
+        finishedEmitted = true
+        emitChunk(ctrl, {
+          ...getBase(),
+          choices: [{
+            index: 0,
+            delta: {},
+            finish_reason: "tool_calls",
+          }],
+        })
+      }
     }
 
     const stream = new ReadableStream({
@@ -321,7 +335,7 @@ Bun.serve({
         while (true) {
           const { done, value } = await reader.read()
           if (done) {
-            if (toolCallDetected && !toolCallComplete) finishToolCall(controller)
+            if (toolCallDetected) finishAllToolCalls(controller)
             controller.close()
             return
           }
@@ -334,14 +348,14 @@ Bun.serve({
 
           for (const line of lines) {
             if (!line.startsWith("data: ")) {
-              if (line.trim()) controller.enqueue(encoder.encode(line + "\n"))
-              else controller.enqueue(encoder.encode("\n"))
+              if (line.trim()) emit(controller, line + "\n")
+              else emit(controller, "\n")
               continue
             }
 
             if (line === "data: [DONE]") {
-              if (toolCallDetected && !toolCallComplete) finishToolCall(controller)
-              controller.enqueue(encoder.encode(line + "\n"))
+              if (toolCallDetected) finishAllToolCalls(controller)
+              emit(controller, line + "\n")
               continue
             }
 
@@ -349,7 +363,7 @@ Bun.serve({
             try {
               chunk = JSON.parse(line.slice(6))
             } catch {
-              controller.enqueue(encoder.encode(line + "\n"))
+              emit(controller, line + "\n")
               continue
             }
 
@@ -357,7 +371,7 @@ Bun.serve({
 
             const delta = chunk.choices?.[0]?.delta
             if (!delta) {
-              controller.enqueue(encoder.encode(line + "\n"))
+              emit(controller, line + "\n")
               continue
             }
 
@@ -370,7 +384,7 @@ Bun.serve({
                 const before = reasoningBuffer.slice(0, idx)
                 if (before) {
                   delta.reasoning_content = before
-                  controller.enqueue(encoder.encode("data: " + JSON.stringify(chunk) + "\n\n"))
+                  emitChunk(controller, chunk)
                 }
                 reasoningBuffer = reasoningBuffer.slice(idx)
                 scanPos = 0
@@ -380,55 +394,55 @@ Bun.serve({
 
               if (toolCallDetected) {
                 tryParseIncremental(controller)
-                if (reasoningBuffer.includes("</tool_call>")) finishToolCall(controller)
                 continue
               }
 
-              controller.enqueue(encoder.encode(line + "\n"))
+              emit(controller, line + "\n")
               continue
             }
 
             if (delta.content !== undefined) {
               if (delta.content.trim()) hasContent = true
-              if (toolCallDetected && !toolCallComplete) finishToolCall(controller)
-              controller.enqueue(encoder.encode(line + "\n"))
+              if (toolCallDetected) finishAllToolCalls(controller)
+              emit(controller, line + "\n")
               continue
             }
 
             if (chunk.choices?.[0]?.finish_reason) {
-              if (toolCallDetected && !toolCallComplete && reasoningBuffer.includes("</tool_call>")) {
-                finishToolCall(controller)
+              if (toolCallDetected) {
+                finishAllToolCalls(controller)
               }
 
-              if (toolCallComplete) {
+              if (toolCallsEmitted > 0) {
                 // Don't forward the original finish chunk -- we already emitted ours
                 continue
               } else if (!hasContent && !toolCallDetected && reasoningBuffer.trim() && chunk.choices[0].finish_reason === "stop") {
                 // Model only produced reasoning with no content -- emit reasoning as content
-                const base = getBase()
-                controller.enqueue(encoder.encode("data: " + JSON.stringify({
-                  ...base,
+                emitChunk(controller, {
+                  ...getBase(),
                   choices: [{
                     index: 0,
                     delta: { content: reasoningBuffer.trim() },
                     finish_reason: null,
                   }],
-                }) + "\n\n"))
+                })
               }
             }
 
-            controller.enqueue(encoder.encode("data: " + JSON.stringify(chunk) + "\n\n"))
+            emit(controller, "data: " + JSON.stringify(chunk) + "\n\n")
           }
         }
       },
     })
 
+    const respHeaders = Object.fromEntries(upstreamRes.headers.entries())
+    delete respHeaders["content-length"]
+    delete respHeaders["transfer-encoding"]
     return new Response(stream, {
       status: upstreamRes.status,
-      headers: Object.fromEntries(upstreamRes.headers.entries()),
+      headers: respHeaders,
     })
     } catch (err: any) {
-      Bun.write("/tmp/lmstudio-proxy-error.log", `${new Date().toISOString()} fetch error: ${err?.stack || err}\n`, { append: true })
       return new Response(`Proxy error: ${err?.message || "unknown"}`, { status: 502 })
     }
   },
