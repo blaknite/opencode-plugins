@@ -81,7 +81,9 @@ Bun.serve({
       body: body ? JSON.stringify(body) : req.body,
     })
 
-    if (!isChatCompletion) {
+    const needsProxy = isChatCompletion && body?.model?.includes("qwen3.5")
+
+    if (!needsProxy) {
       return new Response(upstreamRes.body, {
         status: upstreamRes.status,
         headers: Object.fromEntries(upstreamRes.headers.entries()),
