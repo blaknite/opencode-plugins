@@ -500,6 +500,19 @@ const server = Bun.serve({
             }
 
             if (delta.reasoning_content !== undefined) {
+              // On a retry, insert a paragraph break before the first reasoning chunk
+              // so it doesn't run into the previous response's reasoning
+              if (retries > 0 && reasoningBuffer === "") {
+                emitChunk(controller, {
+                  ...getBase(),
+                  choices: [{
+                    index: 0,
+                    delta: { reasoning_content: "\n\n" },
+                    finish_reason: null,
+                  }],
+                })
+              }
+
               reasoningBuffer += delta.reasoning_content
 
               if (!toolCallDetected && reasoningBuffer.includes("<tool_call>")) {
