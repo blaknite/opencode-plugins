@@ -334,6 +334,7 @@ Bun.serve({
 
     const stream = new ReadableStream({
       async pull(controller) {
+        try {
         while (true) {
           const { done, value } = await reader.read()
           if (done) {
@@ -357,8 +358,9 @@ Bun.serve({
 
             if (line === "data: [DONE]") {
               if (toolCallDetected) finishAllToolCalls(controller)
-              emit(controller, line + "\n")
-              continue
+              if (!finishedEmitted) emit(controller, line + "\n")
+              controller.close()
+              return
             }
 
             let chunk: any
@@ -406,6 +408,7 @@ Bun.serve({
             if (delta.content !== undefined) {
               if (delta.content.trim()) hasContent = true
               if (toolCallDetected) finishAllToolCalls(controller)
+              if (finishedEmitted) { controller.close(); return }
               emit(controller, line + "\n")
               continue
             }
@@ -415,10 +418,12 @@ Bun.serve({
                 finishAllToolCalls(controller)
               }
 
-              if (toolCallsEmitted > 0) {
-                // Don't forward the original finish chunk -- we already emitted ours
-                continue
-              } else if (!hasContent && !toolCallDetected && reasoningBuffer.trim() && chunk.choices[0].finish_reason === "stop") {
+              if (finishedEmitted) {
+                controller.close()
+                return
+              }
+
+              if (!hasContent && !toolCallDetected && reasoningBuffer.trim() && chunk.choices[0].finish_reason === "stop") {
                 // Model only produced reasoning with no content -- emit reasoning as content
                 emitChunk(controller, {
                   ...getBase(),
@@ -433,6 +438,9 @@ Bun.serve({
 
             emit(controller, "data: " + JSON.stringify(chunk) + "\n\n")
           }
+        }
+        } catch (err: any) {
+          controller.error(err)
         }
       },
     })
