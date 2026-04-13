@@ -26,6 +26,7 @@ async function ensureProxy(): Promise<boolean> {
   const child = spawn(BUN, ["run", SCRIPT, upstreamURL, String(PORT)], {
     detached: true,
     stdio: "ignore",
+    env: { ...process.env, PROXY_DEBUG: process.env.PROXY_DEBUG || "0" },
   })
   child.unref()
 

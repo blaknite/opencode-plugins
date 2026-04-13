@@ -2,8 +2,23 @@
 // Intercepts LM Studio responses and moves tool calls from reasoning_content
 // into proper tool_calls structures.
 
-process.on("uncaughtException", () => {})
-process.on("unhandledRejection", () => {})
+import { appendFileSync, mkdirSync } from "fs"
+
+const DEBUG = process.env.PROXY_DEBUG === "1"
+const LOG_DIR = (process.env.HOME || "/tmp") + "/.opencode/logs/proxy"
+if (DEBUG) mkdirSync(LOG_DIR, { recursive: true })
+
+function serverLog(msg: string) {
+  if (!DEBUG) return
+  appendFileSync(`${LOG_DIR}/server.log`, `${new Date().toISOString()} ${msg}\n`)
+}
+
+process.on("uncaughtException", (err) => {
+  serverLog(`uncaughtException: ${err?.stack || err}`)
+})
+process.on("unhandledRejection", (err: any) => {
+  serverLog(`unhandledRejection: ${err?.stack || err}`)
+})
 
 const UPSTREAM = process.argv[2]
 const PORT = parseInt(process.argv[3] || "11435")
@@ -69,6 +84,9 @@ Bun.serve({
 
     let body: any = null
     let isStreaming = false
+    const log = DEBUG
+      ? (msg: string) => { appendFileSync(`${LOG_DIR}/proxy.log`, `${new Date().toISOString()} ${msg}\n`) }
+      : () => {}
 
     if (req.method === "POST" && isChatCompletion) {
       body = await req.json()
@@ -146,6 +164,7 @@ Bun.serve({
     let toolCallsEmitted = 0
 
     function emit(ctrl: ReadableStreamDefaultController, raw: string) {
+      if (raw.trim()) log(`OUT: ${raw.trim()}`)
       ctrl.enqueue(encoder.encode(raw))
     }
 
@@ -174,6 +193,7 @@ Bun.serve({
     function emitToolName(ctrl: ReadableStreamDefaultController, name: string) {
       toolCallStreaming = true
       toolCallId = `proxy_call_${++callCounter}`
+      log(`emitToolName: ${name} index=${toolCallIndex}`)
 
       emitChunk(ctrl, {
         ...getBase(),
@@ -209,6 +229,7 @@ Bun.serve({
     }
 
     function coerceValue(value: string): string {
+      // Try to preserve numeric, boolean, and null types
       if (value === "true") return "true"
       if (value === "false") return "false"
       if (value === "null") return "null"
@@ -217,6 +238,7 @@ Bun.serve({
     }
 
     function emitParam(ctrl: ReadableStreamDefaultController, key: string, value: string) {
+      log(`emitParam: ${key} (${value.length} chars) index=${toolCallIndex}`)
       const escapedValue = coerceValue(value)
       const prefix = paramCount === 0 ? "{" : ","
       const fragment = `${prefix}${JSON.stringify(key)}:${escapedValue}`
@@ -309,6 +331,7 @@ Bun.serve({
 
     function finishAllToolCalls(ctrl: ReadableStreamDefaultController) {
       if (finishedEmitted) return
+      log(`finishAllToolCalls: state=${parseState} emitted=${toolCallsEmitted} streaming=${toolCallStreaming} bufLen=${reasoningBuffer.length}`)
       // Try to parse anything remaining
       tryParseIncremental(ctrl)
 
@@ -351,6 +374,7 @@ Bun.serve({
         while (true) {
           const { done, value } = await reader.read()
           if (done) {
+            log(`stream done: toolCallDetected=${toolCallDetected} state=${parseState} bufLen=${reasoningBuffer.length}`)
             if (toolCallDetected) finishAllToolCalls(controller)
             controller.close()
             return
@@ -368,6 +392,8 @@ Bun.serve({
               else emit(controller, "\n")
               continue
             }
+
+            log(`IN: ${line}`)
 
             if (line === "data: [DONE]") {
               if (toolCallDetected) finishAllToolCalls(controller)
@@ -432,6 +458,7 @@ Bun.serve({
               }
 
               if (finishedEmitted) {
+                // We already sent our finish -- drain the rest and close
                 controller.close()
                 return
               }
@@ -453,6 +480,7 @@ Bun.serve({
           }
         }
         } catch (err: any) {
+          log(`stream error: ${err?.stack || err?.message || "unknown"}`)
           controller.error(err)
         }
       },
@@ -466,6 +494,7 @@ Bun.serve({
       headers: respHeaders,
     })
     } catch (err: any) {
+      log(`error: ${err?.stack || err?.message || "unknown"}`)
       return new Response(`Proxy error: ${err?.message || "unknown"}`, { status: 502 })
     }
   },
