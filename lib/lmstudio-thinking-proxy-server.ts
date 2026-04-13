@@ -39,10 +39,15 @@ function parseToolCalls(raw: string): Array<{ name: string; arguments: string }>
         const name = funcMatch[1]
         const paramsStr = funcMatch[2]
         const paramRegex = /<parameter=([^>]+)>\n?([\s\S]*?)\n?<\/parameter>/g
-        const params: Record<string, string> = {}
+        const params: Record<string, any> = {}
         let pm
         while ((pm = paramRegex.exec(paramsStr)) !== null) {
-          params[pm[1]] = pm[2].replace(/^\n|\n$/g, "")
+          const val = pm[2].replace(/^\n|\n$/g, "")
+          if (val === "true") params[pm[1]] = true
+          else if (val === "false") params[pm[1]] = false
+          else if (val === "null") params[pm[1]] = null
+          else if (/^-?\d+(\.\d+)?$/.test(val.trim())) params[pm[1]] = Number(val.trim())
+          else params[pm[1]] = val
         }
         results.push({ name, arguments: JSON.stringify(params) })
       }
@@ -203,8 +208,16 @@ Bun.serve({
       })
     }
 
+    function coerceValue(value: string): string {
+      if (value === "true") return "true"
+      if (value === "false") return "false"
+      if (value === "null") return "null"
+      if (/^-?\d+(\.\d+)?$/.test(value.trim())) return value.trim()
+      return JSON.stringify(value)
+    }
+
     function emitParam(ctrl: ReadableStreamDefaultController, key: string, value: string) {
-      const escapedValue = JSON.stringify(value)
+      const escapedValue = coerceValue(value)
       const prefix = paramCount === 0 ? "{" : ","
       const fragment = `${prefix}${JSON.stringify(key)}:${escapedValue}`
       paramCount++
