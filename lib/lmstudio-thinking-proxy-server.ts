@@ -182,7 +182,6 @@ const server = Bun.serve({
         log(`reasoning-only response detected (non-streaming), retrying (${retries}/${MAX_RETRIES})`)
 
         body.messages.push(
-          { role: "assistant", content: "", reasoning_content: msg.reasoning_content.trim() },
           { role: "user", content: "Your response was not received. Please try again." },
         )
 
@@ -562,9 +561,8 @@ const server = Bun.serve({
                   retries++
                   log(`reasoning-only response detected, retrying (${retries}/${MAX_RETRIES})`)
 
-                  // Append the model's reasoning as an assistant turn + a nudge
+                  // Just nudge -- don't echo reasoning back or the model will repeat it
                   body.messages.push(
-                    { role: "assistant", content: "", reasoning_content: reasoningBuffer.trim() },
                     { role: "user", content: "Your response was not received. Please try again." },
                   )
 
