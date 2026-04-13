@@ -1,31 +1,27 @@
-import type { Plugin } from "@opencode-ai/plugin"
-import { randomBytes } from "crypto"
+import type { Plugin } from "@opencode-ai/plugin";
 
-function partID(): string {
-  const chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
-  let result = ""
-  const bytes = randomBytes(26)
-  for (let i = 0; i < 26; i++) {
-    result += chars[bytes[i] % 62]
-  }
-  return "prt_" + result
-}
+const REMINDER = [
+  "",
+  "<system-reminder>",
+  "If the user is asking you to do something new, you MUST call find_skill before responding.",
+  "</system-reminder>",
+].join("\n");
 
 export const SkillReminder: Plugin = async () => {
   return {
-    "chat.message": async (input, output) => {
-      output.parts.push({
-        id: partID(),
-        sessionID: input.sessionID,
-        messageID: output.message.id,
-        type: "text",
-        synthetic: true,
-        text: [
-          "<system-reminder>",
-          "Determine if this message is a new task or action. If so, call find_skill before proceeding.",
-          "</system-reminder>",
-        ].join("\n"),
-      } as any)
+    "experimental.chat.messages.transform": async (_input, output) => {
+      // Find the last user message and append the reminder to its parts
+      for (let i = output.messages.length - 1; i >= 0; i--) {
+        const { info, parts } = output.messages[i];
+        if (info.role === "user") {
+          parts.push({
+            type: "text",
+            synthetic: true,
+            text: REMINDER,
+          } as any);
+          break;
+        }
+      }
     },
-  }
-}
+  };
+};
