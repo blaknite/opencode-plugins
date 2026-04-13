@@ -22,7 +22,7 @@ export const SkillReminder: Plugin = async () => {
         synthetic: true,
         text: [
           "<system-reminder>",
-          "Check if there are relevant skills for this task by calling the find_skill tool before proceeding.",
+          "Determine if this message is a new task or action. If so, call find_skill before proceeding.",
           "</system-reminder>",
         ].join("\n"),
       } as any)
