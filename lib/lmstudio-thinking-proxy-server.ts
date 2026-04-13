@@ -183,7 +183,7 @@ const server = Bun.serve({
 
         body.messages.push(
           { role: "assistant", content: "", reasoning_content: msg.reasoning_content.trim() },
-          { role: "user", content: "Please continue." },
+          { role: "user", content: "Your response was not received. Please try again." },
         )
 
         const retryRes = await fetch(upstream, {
@@ -565,7 +565,7 @@ const server = Bun.serve({
                   // Append the model's reasoning as an assistant turn + a nudge
                   body.messages.push(
                     { role: "assistant", content: "", reasoning_content: reasoningBuffer.trim() },
-                    { role: "user", content: "Please continue." },
+                    { role: "user", content: "Your response was not received. Please try again." },
                   )
 
                   // Fire a new request to LM Studio
