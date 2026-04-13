@@ -71,16 +71,20 @@ function parseToolCalls(raw: string): Array<{ name: string; arguments: string }>
   return results
 }
 
-Bun.serve({
+const server = Bun.serve({
   port: PORT,
+  idleTimeout: 255, // max value; prevents Bun from killing slow SSE streams during LM Studio prefill
   error(err) {
     return new Response(`Proxy error: ${err.message}`, { status: 502 })
   },
-  async fetch(req) {
+  async fetch(req, server) {
     try {
     const url = new URL(req.url)
     const upstream = `${UPSTREAM}${url.pathname}${url.search}`
     const isChatCompletion = url.pathname === "/v1/chat/completions"
+
+    // Disable idle timeout for chat completions -- LM Studio prefill can take 30s+
+    if (isChatCompletion) server.timeout(req, 0)
 
     let body: any = null
     let isStreaming = false
@@ -98,11 +102,28 @@ Bun.serve({
       if (k !== "host") headers[k] = v
     })
 
+    const bodyStr = body ? JSON.stringify(body) : null
+    if (isChatCompletion) {
+      log(`REQ: ${req.method} ${upstream} model=${body?.model || "?"} stream=${isStreaming} bodyLen=${bodyStr?.length || 0} messages=${body?.messages?.length || 0}`)
+    }
+
     const upstreamRes = await fetch(upstream, {
       method: req.method,
       headers,
-      body: body ? JSON.stringify(body) : req.body,
+      body: bodyStr || req.body,
     })
+
+    log(`RES: ${upstreamRes.status} ${upstreamRes.statusText} content-type=${upstreamRes.headers.get("content-type")}`)
+
+    // If upstream returned an error, log the body and pass it through
+    if (!upstreamRes.ok) {
+      const errBody = await upstreamRes.text()
+      log(`RES BODY (error): ${errBody.slice(0, 2000)}`)
+      return new Response(errBody, {
+        status: upstreamRes.status,
+        headers: Object.fromEntries(upstreamRes.headers.entries()),
+      })
+    }
 
     const needsProxy = isChatCompletion && body?.model?.includes("qwen3.5")
 
@@ -149,7 +170,11 @@ Bun.serve({
     }
 
     // Streaming
-    const reader = upstreamRes.body!.getReader()
+    if (!upstreamRes.body) {
+      log(`WARN: upstream returned no body for streaming request`)
+      return new Response("", { status: 200 })
+    }
+    const reader = upstreamRes.body.getReader()
     const decoder = new TextDecoder()
     const encoder = new TextEncoder()
 
@@ -163,7 +188,16 @@ Bun.serve({
     let toolCallIndex = 0
     let toolCallsEmitted = 0
 
+    let streamClosed = false
+
+    function closeStream(ctrl: ReadableStreamDefaultController) {
+      if (streamClosed) return
+      streamClosed = true
+      try { ctrl.close() } catch {}
+    }
+
     function emit(ctrl: ReadableStreamDefaultController, raw: string) {
+      if (streamClosed) return
       if (raw.trim()) log(`OUT: ${raw.trim()}`)
       ctrl.enqueue(encoder.encode(raw))
     }
@@ -368,15 +402,22 @@ Bun.serve({
       }
     }
 
+    let pullCount = 0
+
     const stream = new ReadableStream({
+      start() {
+        log(`stream START: ReadableStream created`)
+      },
       async pull(controller) {
+        pullCount++
+        log(`pull() called #${pullCount} streamClosed=${streamClosed}`)
         try {
-        while (true) {
+        while (!streamClosed) {
           const { done, value } = await reader.read()
-          if (done) {
+          if (done || streamClosed) {
             log(`stream done: toolCallDetected=${toolCallDetected} state=${parseState} bufLen=${reasoningBuffer.length}`)
             if (toolCallDetected) finishAllToolCalls(controller)
-            controller.close()
+            closeStream(controller)
             return
           }
 
@@ -398,7 +439,7 @@ Bun.serve({
             if (line === "data: [DONE]") {
               if (toolCallDetected) finishAllToolCalls(controller)
               if (!finishedEmitted) emit(controller, line + "\n")
-              controller.close()
+              closeStream(controller)
               return
             }
 
@@ -447,7 +488,7 @@ Bun.serve({
             if (delta.content !== undefined) {
               if (delta.content.trim()) hasContent = true
               if (toolCallDetected) finishAllToolCalls(controller)
-              if (finishedEmitted) { controller.close(); return }
+              if (finishedEmitted) { closeStream(controller); return }
               emit(controller, line + "\n")
               continue
             }
@@ -459,7 +500,7 @@ Bun.serve({
 
               if (finishedEmitted) {
                 // We already sent our finish -- drain the rest and close
-                controller.close()
+                closeStream(controller)
                 return
               }
 
@@ -480,9 +521,16 @@ Bun.serve({
           }
         }
         } catch (err: any) {
-          log(`stream error: ${err?.stack || err?.message || "unknown"}`)
-          controller.error(err)
+          if (!streamClosed) {
+            log(`stream error: ${err?.stack || err?.message || "unknown"}`)
+            try { controller.error(err) } catch {}
+          }
         }
+      },
+      cancel(reason) {
+        log(`stream CANCELLED by client: ${reason || "no reason"}`)
+        streamClosed = true
+        reader.cancel().catch(() => {})
       },
     })
 
