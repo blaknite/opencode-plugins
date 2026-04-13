@@ -579,6 +579,8 @@ const server = Bun.serve({
                     log(`retry failed: ${retryRes.status} ${retryRes.statusText}`)
                     // Fall through to emit the original finish
                   } else {
+                    // Cancel the old reader so LM Studio stops generating
+                    reader.cancel().catch(() => {})
                     // Swap reader and reset state for the new stream
                     reader = retryRes.body.getReader()
                     reasoningBuffer = ""
@@ -620,6 +622,7 @@ const server = Bun.serve({
             log(`stream error: ${err?.stack || err?.message || "unknown"}`)
             try { controller.error(err) } catch {}
           }
+          reader.cancel().catch(() => {})
         }
       },
       cancel(reason) {
