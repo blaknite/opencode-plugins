@@ -226,6 +226,9 @@ const server = Bun.serve({
     let toolCallIndex = 0
     let toolCallsEmitted = 0
     let retries = 0
+    let prevReasoning = ""  // snapshot of reasoning already streamed, for dedup on retry
+    let overlapPos = 0
+    let pastOverlap = false
 
     let streamClosed = false
 
@@ -499,17 +502,24 @@ const server = Bun.serve({
             }
 
             if (delta.reasoning_content !== undefined) {
-              // On a retry, insert a paragraph break before the first reasoning chunk
-              // so it doesn't run into the previous response's reasoning
-              if (retries > 0 && reasoningBuffer === "") {
-                emitChunk(controller, {
-                  ...getBase(),
-                  choices: [{
-                    index: 0,
-                    delta: { reasoning_content: "\n\n" },
-                    finish_reason: null,
-                  }],
-                })
+              // On a retry, skip any reasoning the model re-emits that we already streamed
+              if (retries > 0 && !pastOverlap) {
+                const text = delta.reasoning_content
+                let i = 0
+                while (i < text.length && overlapPos < prevReasoning.length) {
+                  if (text[i] === prevReasoning[overlapPos]) {
+                    overlapPos++
+                    i++
+                  } else {
+                    pastOverlap = true
+                    break
+                  }
+                }
+                if (overlapPos >= prevReasoning.length) pastOverlap = true
+                delta.reasoning_content = text.slice(i)
+                if (!delta.reasoning_content) {
+                  continue
+                }
               }
 
               reasoningBuffer += delta.reasoning_content
@@ -581,6 +591,9 @@ const server = Bun.serve({
                     reader.cancel().catch(() => {})
                     // Swap reader and reset state for the new stream
                     reader = retryRes.body.getReader()
+                    prevReasoning = reasoningBuffer
+                    overlapPos = 0
+                    pastOverlap = false
                     reasoningBuffer = ""
                     toolCallDetected = false
                     toolCallStreaming = false
