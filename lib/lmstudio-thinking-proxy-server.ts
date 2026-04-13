@@ -126,6 +126,7 @@ const server = Bun.serve({
     }
 
     const needsProxy = isChatCompletion && body?.model?.includes("qwen3.5")
+    const MAX_RETRIES = 3
 
     if (!needsProxy) {
       return new Response(upstreamRes.body, {
@@ -135,32 +136,70 @@ const server = Bun.serve({
     }
 
     if (!isStreaming) {
-      const data = await upstreamRes.json() as any
+      let data = await upstreamRes.json() as any
+      let retries = 0
 
-      for (const choice of data.choices || []) {
-        const msg = choice.message
-        if (!msg?.reasoning_content) continue
+      while (retries <= MAX_RETRIES) {
+        for (const choice of data.choices || []) {
+          const msg = choice.message
+          if (!msg?.reasoning_content) continue
 
-        const toolCalls = parseToolCalls(msg.reasoning_content)
+          const toolCalls = parseToolCalls(msg.reasoning_content)
 
-        if (toolCalls.length > 0) {
-          msg.reasoning_content = msg.reasoning_content
-            .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "")
-            .trimEnd()
+          if (toolCalls.length > 0) {
+            msg.reasoning_content = msg.reasoning_content
+              .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "")
+              .trimEnd()
 
-          if (!msg.tool_calls || msg.tool_calls.length === 0) {
-            msg.tool_calls = toolCalls.map((tc) => ({
-              id: `proxy_call_${++callCounter}`,
-              type: "function",
-              function: { name: tc.name, arguments: tc.arguments },
-            }))
-            choice.finish_reason = "tool_calls"
+            if (!msg.tool_calls || msg.tool_calls.length === 0) {
+              msg.tool_calls = toolCalls.map((tc) => ({
+                id: `proxy_call_${++callCounter}`,
+                type: "function",
+                function: { name: tc.name, arguments: tc.arguments },
+              }))
+              choice.finish_reason = "tool_calls"
+            }
           }
-        } else if ((!msg.content || !msg.content.trim()) && choice.finish_reason === "stop") {
-          // Model put its entire response in reasoning with no content -- move it
+        }
+
+        const choice = data.choices?.[0]
+        const msg = choice?.message
+        const reasoningOnly = msg?.reasoning_content?.trim()
+          && (!msg?.content || !msg.content.trim())
+          && (!msg?.tool_calls || msg.tool_calls.length === 0)
+          && choice?.finish_reason === "stop"
+
+        if (!reasoningOnly || retries >= MAX_RETRIES) {
+          if (reasoningOnly) {
+            log(`reasoning-only response after ${MAX_RETRIES} retries, emitting as content`)
+            msg.content = msg.reasoning_content
+            msg.reasoning_content = ""
+          }
+          break
+        }
+
+        retries++
+        log(`reasoning-only response detected (non-streaming), retrying (${retries}/${MAX_RETRIES})`)
+
+        body.messages.push(
+          { role: "assistant", content: "", reasoning_content: msg.reasoning_content.trim() },
+          { role: "user", content: "You were thinking but didn't produce a response or use any tools. Please continue." },
+        )
+
+        const retryRes = await fetch(upstream, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+        })
+
+        if (!retryRes.ok) {
+          log(`retry failed: ${retryRes.status} ${retryRes.statusText}`)
           msg.content = msg.reasoning_content
           msg.reasoning_content = ""
+          break
         }
+
+        data = await retryRes.json() as any
       }
 
       return Response.json(data, {
@@ -174,7 +213,7 @@ const server = Bun.serve({
       log(`WARN: upstream returned no body for streaming request`)
       return new Response("", { status: 200 })
     }
-    const reader = upstreamRes.body.getReader()
+    let reader = upstreamRes.body.getReader()
     const decoder = new TextDecoder()
     const encoder = new TextEncoder()
 
@@ -187,6 +226,7 @@ const server = Bun.serve({
     let toolCallId = ""
     let toolCallIndex = 0
     let toolCallsEmitted = 0
+    let retries = 0
 
     let streamClosed = false
 
@@ -505,15 +545,57 @@ const server = Bun.serve({
               }
 
               if (!hasContent && !toolCallDetected && reasoningBuffer.trim() && chunk.choices[0].finish_reason === "stop") {
-                // Model only produced reasoning with no content -- emit reasoning as content
-                emitChunk(controller, {
-                  ...getBase(),
-                  choices: [{
-                    index: 0,
-                    delta: { content: reasoningBuffer.trim() },
-                    finish_reason: null,
-                  }],
-                })
+                if (retries < MAX_RETRIES) {
+                  retries++
+                  log(`reasoning-only response detected, retrying (${retries}/${MAX_RETRIES})`)
+
+                  // Append the model's reasoning as an assistant turn + a nudge
+                  body.messages.push(
+                    { role: "assistant", content: "", reasoning_content: reasoningBuffer.trim() },
+                    { role: "user", content: "You were thinking but didn't produce a response or use any tools. Please continue." },
+                  )
+
+                  // Fire a new request to LM Studio
+                  const retryRes = await fetch(upstream, {
+                    method: "POST",
+                    headers,
+                    body: JSON.stringify(body),
+                  })
+
+                  if (!retryRes.ok || !retryRes.body) {
+                    log(`retry failed: ${retryRes.status} ${retryRes.statusText}`)
+                    // Fall through to emit the original finish
+                  } else {
+                    // Swap reader and reset state for the new stream
+                    reader = retryRes.body.getReader()
+                    reasoningBuffer = ""
+                    toolCallDetected = false
+                    toolCallStreaming = false
+                    lineBuffer = ""
+                    hasContent = false
+                    toolCallId = ""
+                    toolCallIndex = 0
+                    toolCallsEmitted = 0
+                    parseState = "idle"
+                    currentParamName = ""
+                    paramCount = 0
+                    scanPos = 0
+                    finishedEmitted = false
+                    // Break out of the lines loop to read from the new reader
+                    break
+                  }
+                } else {
+                  log(`reasoning-only response after ${MAX_RETRIES} retries, emitting as content`)
+                  // Give up -- emit reasoning as content
+                  emitChunk(controller, {
+                    ...getBase(),
+                    choices: [{
+                      index: 0,
+                      delta: { content: reasoningBuffer.trim() },
+                      finish_reason: null,
+                    }],
+                  })
+                }
               }
             }
 
