@@ -183,7 +183,7 @@ const server = Bun.serve({
 
         body.messages.push(
           { role: "assistant", content: "", reasoning_content: msg.reasoning_content.trim() },
-          { role: "user", content: "You were thinking but didn't produce a response or use any tools. Please continue." },
+          { role: "user", content: "Please continue." },
         )
 
         const retryRes = await fetch(upstream, {
@@ -552,7 +552,7 @@ const server = Bun.serve({
                   // Append the model's reasoning as an assistant turn + a nudge
                   body.messages.push(
                     { role: "assistant", content: "", reasoning_content: reasoningBuffer.trim() },
-                    { role: "user", content: "You were thinking but didn't produce a response or use any tools. Please continue." },
+                    { role: "user", content: "Please continue." },
                   )
 
                   // Fire a new request to LM Studio
