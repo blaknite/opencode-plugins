@@ -218,6 +218,7 @@ const server = Bun.serve({
     const encoder = new TextEncoder()
 
     let reasoningBuffer = ""
+    let emittedReasoningLen = 0
     let toolCallDetected = false
     let toolCallStreaming = false
     let templateChunk: any = null
@@ -516,12 +517,13 @@ const server = Bun.serve({
               if (!toolCallDetected && reasoningBuffer.includes("<tool_call>")) {
                 toolCallDetected = true
                 const idx = reasoningBuffer.indexOf("<tool_call>")
-                const before = reasoningBuffer.slice(0, idx)
+                const before = reasoningBuffer.slice(emittedReasoningLen, idx)
                 if (before) {
                   delta.reasoning_content = before
                   emitChunk(controller, chunk)
                 }
                 reasoningBuffer = reasoningBuffer.slice(idx)
+                emittedReasoningLen = 0
                 scanPos = 0
                 tryParseIncremental(controller)
                 continue
@@ -532,6 +534,7 @@ const server = Bun.serve({
                 continue
               }
 
+              emittedReasoningLen = reasoningBuffer.length
               emit(controller, line + "\n")
               continue
             }
@@ -583,6 +586,7 @@ const server = Bun.serve({
                     // Swap reader and reset state for the new stream
                     reader = retryRes.body.getReader()
                     reasoningBuffer = ""
+                    emittedReasoningLen = 0
                     toolCallDetected = false
                     toolCallStreaming = false
                     lineBuffer = ""
