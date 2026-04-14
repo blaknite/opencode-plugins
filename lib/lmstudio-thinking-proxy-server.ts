@@ -183,7 +183,7 @@ const server = Bun.serve({
 
         body.messages.push({
           role: "user",
-          content: `Your response was incomplete. Here is your thinking so far:\n\n<think>\n${msg.reasoning_content.trim()}\n</think>\n\nPlease continue.`,
+          content: `Your response was incomplete. Here is your thinking so far:\n\n<think>\n${msg.reasoning_content.trim()}\n</think>\n\nDo not repeat your thinking. Please continue with your response.`,
         })
 
         const retryRes = await fetch(upstream, {
@@ -562,7 +562,7 @@ const server = Bun.serve({
 
                   body.messages.push({
                     role: "user",
-                    content: `Your response was incomplete. Here is your thinking so far:\n\n<think>\n${reasoningBuffer.trim()}\n</think>\n\nPlease continue.`,
+                    content: `Your response was incomplete. Here is your thinking so far:\n\n<think>\n${reasoningBuffer.trim()}\n</think>\n\nDo not repeat your thinking. Please continue with your response.`,
                   })
 
                   // Fire a new request to LM Studio
