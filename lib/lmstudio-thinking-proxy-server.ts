@@ -181,9 +181,10 @@ const server = Bun.serve({
         retries++
         log(`reasoning-only response detected (non-streaming), retrying (${retries}/${MAX_RETRIES})`)
 
-        body.messages.push(
-          { role: "user", content: "Your response was not received. Please try again." },
-        )
+        body.messages.push({
+          role: "user",
+          content: `Your response was incomplete. Here is your thinking so far:\n\n<think>\n${msg.reasoning_content.trim()}\n</think>\n\nPlease continue.`,
+        })
 
         const retryRes = await fetch(upstream, {
           method: "POST",
@@ -226,9 +227,6 @@ const server = Bun.serve({
     let toolCallIndex = 0
     let toolCallsEmitted = 0
     let retries = 0
-    let prevReasoning = ""  // snapshot of reasoning already streamed, for dedup on retry
-    let overlapPos = 0
-    let pastOverlap = false
 
     let streamClosed = false
 
@@ -502,26 +500,6 @@ const server = Bun.serve({
             }
 
             if (delta.reasoning_content !== undefined) {
-              // On a retry, skip any reasoning the model re-emits that we already streamed
-              if (retries > 0 && !pastOverlap) {
-                const text = delta.reasoning_content
-                let i = 0
-                while (i < text.length && overlapPos < prevReasoning.length) {
-                  if (text[i] === prevReasoning[overlapPos]) {
-                    overlapPos++
-                    i++
-                  } else {
-                    pastOverlap = true
-                    break
-                  }
-                }
-                if (overlapPos >= prevReasoning.length) pastOverlap = true
-                delta.reasoning_content = text.slice(i)
-                if (!delta.reasoning_content) {
-                  continue
-                }
-              }
-
               reasoningBuffer += delta.reasoning_content
 
               if (!toolCallDetected && reasoningBuffer.includes("<tool_call>")) {
@@ -571,10 +549,10 @@ const server = Bun.serve({
                   retries++
                   log(`reasoning-only response detected, retrying (${retries}/${MAX_RETRIES})`)
 
-                  // Just nudge -- don't echo reasoning back or the model will repeat it
-                  body.messages.push(
-                    { role: "user", content: "Your response was not received. Please try again." },
-                  )
+                  body.messages.push({
+                    role: "user",
+                    content: `Your response was incomplete. Here is your thinking so far:\n\n<think>\n${reasoningBuffer.trim()}\n</think>\n\nPlease continue.`,
+                  })
 
                   // Fire a new request to LM Studio
                   const retryRes = await fetch(upstream, {
@@ -591,9 +569,6 @@ const server = Bun.serve({
                     reader.cancel().catch(() => {})
                     // Swap reader and reset state for the new stream
                     reader = retryRes.body.getReader()
-                    prevReasoning = reasoningBuffer
-                    overlapPos = 0
-                    pastOverlap = false
                     reasoningBuffer = ""
                     toolCallDetected = false
                     toolCallStreaming = false
