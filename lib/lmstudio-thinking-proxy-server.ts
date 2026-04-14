@@ -227,6 +227,7 @@ const server = Bun.serve({
     let toolCallIndex = 0
     let toolCallsEmitted = 0
     let retries = 0
+    let lastReasoningChar = ""
 
     let streamClosed = false
 
@@ -501,12 +502,15 @@ const server = Bun.serve({
 
             if (delta.reasoning_content !== undefined) {
               if (retries > 0 && reasoningBuffer === "") {
+                // Emit exactly enough newlines to produce a blank line after the previous reasoning
+                const sep = lastReasoningChar === "\n" ? "\n" : "\n\n"
                 emitChunk(controller, {
                   ...getBase(),
-                  choices: [{ index: 0, delta: { reasoning_content: "\n" }, finish_reason: null }],
+                  choices: [{ index: 0, delta: { reasoning_content: sep }, finish_reason: null }],
                 })
               }
 
+              if (delta.reasoning_content) lastReasoningChar = delta.reasoning_content.slice(-1)
               reasoningBuffer += delta.reasoning_content
 
               if (!toolCallDetected && reasoningBuffer.includes("<tool_call>")) {
