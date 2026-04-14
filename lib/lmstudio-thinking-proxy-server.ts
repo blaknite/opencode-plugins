@@ -503,7 +503,7 @@ const server = Bun.serve({
               if (retries > 0 && reasoningBuffer === "") {
                 emitChunk(controller, {
                   ...getBase(),
-                  choices: [{ index: 0, delta: { reasoning_content: "\n\n" }, finish_reason: null }],
+                  choices: [{ index: 0, delta: { reasoning_content: "\n" }, finish_reason: null }],
                 })
               }
 
