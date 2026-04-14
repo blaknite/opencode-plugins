@@ -565,6 +565,8 @@ const server = Bun.serve({
                     content: `Your response was incomplete. Here is your thinking so far:\n\n<think>\n${reasoningBuffer.trim()}\n</think>\n\nDo not repeat your thinking. Please continue with your response.`,
                   })
 
+                  reasoningBuffer = ""
+
                   // Fire a new request to LM Studio
                   const retryRes = await fetch(upstream, {
                     method: "POST",
