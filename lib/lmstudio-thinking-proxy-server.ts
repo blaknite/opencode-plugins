@@ -500,6 +500,13 @@ const server = Bun.serve({
             }
 
             if (delta.reasoning_content !== undefined) {
+              if (retries > 0 && reasoningBuffer === "") {
+                emitChunk(controller, {
+                  ...getBase(),
+                  choices: [{ index: 0, delta: { reasoning_content: "\n\n" }, finish_reason: null }],
+                })
+              }
+
               reasoningBuffer += delta.reasoning_content
 
               if (!toolCallDetected && reasoningBuffer.includes("<tool_call>")) {
