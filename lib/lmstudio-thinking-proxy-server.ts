@@ -62,7 +62,16 @@ function parseToolCalls(raw: string): Array<{ name: string; arguments: string }>
           else if (val === "false") params[pm[1]] = false
           else if (val === "null") params[pm[1]] = null
           else if (/^-?\d+(\.\d+)?$/.test(val.trim())) params[pm[1]] = Number(val.trim())
-          else params[pm[1]] = val
+          else {
+            const trimmed = val.trim()
+            if ((trimmed.startsWith("[") && trimmed.endsWith("]")) || (trimmed.startsWith("{") && trimmed.endsWith("}"))) {
+              try {
+                params[pm[1]] = JSON.parse(trimmed)
+                continue
+              } catch {}
+            }
+            params[pm[1]] = val
+          }
         }
         results.push({ name, arguments: JSON.stringify(params) })
       }
@@ -310,6 +319,14 @@ const server = Bun.serve({
       if (value === "false") return "false"
       if (value === "null") return "null"
       if (/^-?\d+(\.\d+)?$/.test(value.trim())) return value.trim()
+      // Try to preserve arrays and objects that arrive as JSON text
+      const trimmed = value.trim()
+      if ((trimmed.startsWith("[") && trimmed.endsWith("]")) || (trimmed.startsWith("{") && trimmed.endsWith("}"))) {
+        try {
+          JSON.parse(trimmed)
+          return trimmed
+        } catch {}
+      }
       return JSON.stringify(value)
     }
 
