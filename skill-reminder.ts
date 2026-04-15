@@ -10,17 +10,13 @@ const REMINDER = [
 export const SkillReminder: Plugin = async () => {
   return {
     "experimental.chat.messages.transform": async (_input, output) => {
-      // Find the last user message and append the reminder to its parts
-      for (let i = output.messages.length - 1; i >= 0; i--) {
-        const { info, parts } = output.messages[i];
-        if (info.role === "user") {
-          parts.push({
-            type: "text",
-            synthetic: true,
-            text: REMINDER,
-          } as any);
-          break;
-        }
+      const last = output.messages[output.messages.length - 1];
+      if (last && last.info.role === "user") {
+        last.parts.push({
+          type: "text",
+          synthetic: true,
+          text: REMINDER,
+        } as any);
       }
     },
   };
