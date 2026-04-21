@@ -95,6 +95,9 @@ const server = Bun.serve({
     // Disable idle timeout for chat completions -- LM Studio prefill can take 30s+
     if (isChatCompletion) server.timeout(req, 0)
 
+    // One AbortController per request -- aborted when the client disconnects
+    const abortCtrl = new AbortController()
+
     let body: any = null
     let isStreaming = false
     const log = DEBUG
@@ -120,6 +123,7 @@ const server = Bun.serve({
       method: req.method,
       headers,
       body: bodyStr || req.body,
+      signal: abortCtrl.signal,
     })
 
     log(`RES: ${upstreamRes.status} ${upstreamRes.statusText} content-type=${upstreamRes.headers.get("content-type")}`)
@@ -199,6 +203,7 @@ const server = Bun.serve({
           method: "POST",
           headers,
           body: JSON.stringify(body),
+          signal: abortCtrl.signal,
         })
 
         if (!retryRes.ok) {
@@ -592,6 +597,7 @@ const server = Bun.serve({
                     method: "POST",
                     headers,
                     body: JSON.stringify(body),
+                    signal: abortCtrl.signal,
                   })
 
                   if (!retryRes.ok || !retryRes.body) {
@@ -638,7 +644,10 @@ const server = Bun.serve({
           }
         }
         } catch (err: any) {
-          if (!streamClosed) {
+          if (err?.name === "AbortError" || abortCtrl.signal.aborted) {
+            log(`stream aborted by client`)
+            closeStream(controller)
+          } else if (!streamClosed) {
             log(`stream error: ${err?.stack || err?.message || "unknown"}`)
             try { controller.error(err) } catch {}
           }
@@ -648,6 +657,7 @@ const server = Bun.serve({
       cancel(reason) {
         log(`stream CANCELLED by client: ${reason || "no reason"}`)
         streamClosed = true
+        abortCtrl.abort()
         reader.cancel().catch(() => {})
       },
     })
