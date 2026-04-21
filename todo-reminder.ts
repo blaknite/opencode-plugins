@@ -12,13 +12,15 @@ export const TodoReminder: Plugin = async () => {
     },
 
     "experimental.chat.messages.transform": async (_input, output) => {
-      const todo = todos.find((t) => t.status === "in_progress") ?? todos.find((t) => t.status === "pending");
+      const todo =
+        todos.find((t) => t.status === "in_progress") ??
+        todos.find((t) => t.status === "pending");
 
       if (!todo) {
         const reminder = [
           "",
           "<system-reminder>",
-          "If this task has multiple steps, use the TodoWrite tool to break it down before starting.",
+          "If this is a multi-step task, use TodoWrite to break it down before starting.",
           "</system-reminder>",
         ].join("\n");
 
@@ -33,9 +35,10 @@ export const TodoReminder: Plugin = async () => {
         return;
       }
 
-      const message = todo.status === "in_progress"
-        ? `The current todo item is: "${todo.content}". Stay focused on this task. If this task is complete, mark it done and move to the next.`
-        : `The next todo item is: "${todo.content}". This should be your next task.`;
+      const message =
+        todo.status === "in_progress"
+          ? `The current todo item is: "${todo.content}". Stay focused on this task. If this task is complete, mark it done and move to the next.`
+          : `The next todo item is: "${todo.content}". This should be your next task.`;
 
       const reminder = [
         "",
