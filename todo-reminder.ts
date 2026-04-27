@@ -20,7 +20,7 @@ export const TodoReminder: Plugin = async () => {
         const reminder = [
           "",
           "<system-reminder>",
-          "If this is a multi-step task, use TodoWrite to break it down before starting.",
+          "If you have a new goal with three or more distinct steps you MUST call TodoWrite and track your process.",
           "</system-reminder>",
         ].join("\n");
 

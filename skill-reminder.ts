@@ -3,7 +3,7 @@ import type { Plugin } from "@opencode-ai/plugin";
 const REMINDER = [
   "",
   "<system-reminder>",
-  "If this is a new task, you MUST call find_skill before responding.",
+  "If you have a new goal you MUST call find_skill.",
   "</system-reminder>",
 ].join("\n");
 
