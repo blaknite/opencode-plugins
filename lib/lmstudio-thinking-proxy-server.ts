@@ -89,6 +89,11 @@ const server = Bun.serve({
   async fetch(req, server) {
     try {
     const url = new URL(req.url)
+
+    if (url.pathname === "/ping") {
+      return new Response("ok", { status: 200 })
+    }
+
     const upstream = `${UPSTREAM}${url.pathname}${url.search}`
     const isChatCompletion = url.pathname === "/v1/chat/completions"
 

@@ -10,7 +10,7 @@ let upstreamURL = ""
 
 async function isProxyRunning(): Promise<boolean> {
   try {
-    const res = await fetch(`http://localhost:${PORT}/v1/models`, {
+    const res = await fetch(`http://localhost:${PORT}/ping`, {
       signal: AbortSignal.timeout(500),
     })
     return res.ok
