@@ -143,7 +143,7 @@ const server = Bun.serve({
       })
     }
 
-    const needsProxy = isChatCompletion && body?.model?.includes("qwen3.5")
+    const needsProxy = isChatCompletion && (body?.model?.includes("qwen3.5") || body?.model?.includes("qwen3.6"))
     const MAX_RETRIES = 3
 
     if (!needsProxy) {
