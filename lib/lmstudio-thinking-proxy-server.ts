@@ -112,6 +112,16 @@ const server = Bun.serve({
     if (req.method === "POST" && isChatCompletion) {
       body = await req.json()
       isStreaming = body.stream === true
+
+      const enableThinking = body?.chat_template_kwargs?.enable_thinking
+      if (enableThinking === false) {
+        delete body.chat_template_kwargs?.enable_thinking
+        if (body.chat_template_kwargs && Object.keys(body.chat_template_kwargs).length === 0) {
+          delete body.chat_template_kwargs
+        }
+        body.messages = [...(body.messages || []), { role: "assistant", content: "<think></think>\n" }]
+        log(`enable_thinking=false: injected empty think block`)
+      }
     }
 
     const headers: Record<string, string> = {}
