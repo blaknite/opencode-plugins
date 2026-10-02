@@ -1,0 +1,18 @@
+{
+  "name": "opencode-plugins",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test plugins",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opencode/client": "2.0.16",
+    "@opencode/plugin": "2.0.16",
+    "zod": "4.1.8"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.2",
+    "typescript": "7.0.2"
+  }
+}
