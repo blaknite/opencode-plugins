@@ -21,7 +21,7 @@ const excluded = new Set([
   "linkedin.com",
 ])
 
-function run(args: string[], signal: AbortSignal): Promise<string> {
+function run(args: string[], signal: AbortSignal): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const process = spawn("ddgs", args, { signal, stdio: ["ignore", "pipe", "pipe"] })
     let output = ""
@@ -32,19 +32,29 @@ function run(args: string[], signal: AbortSignal): Promise<string> {
     process.stderr.on("data", (chunk) => { error += chunk })
     process.on("error", reject)
     process.on("close", (code) => {
-      if (code === 0) resolve(output)
-      else reject(new Error(`ddgs exited with code ${code}: ${error.trim()}`))
+      if (code === 0) resolve({ stdout: output, stderr: error })
+      else reject(new Error(`ddgs exited with code ${code}: ${[error, output].filter(Boolean).join("\n").trim()}`))
     })
   })
 }
 
-async function search(query: string, signal: AbortSignal): Promise<Result[]> {
+export async function search(query: string, signal: AbortSignal, execute = run): Promise<Result[]> {
   const directory = await mkdtemp(join(tmpdir(), "opencode-ddgs-"))
   try {
     const path = join(directory, "results.json")
     const exclusions = [...excluded].map((site) => `-site:${site}`).join(" ")
-    await run(["text", "-q", `${query} ${exclusions}`, "-m", "3", "-b", "auto", "-o", path], signal)
-    return JSON.parse(await readFile(path, "utf8")) as Result[]
+    const output = await execute(["text", "-q", `${query} ${exclusions}`, "-m", "3", "-b", "auto", "-o", path], signal)
+    signal.throwIfAborted()
+    let content: string
+    try {
+      content = await readFile(path, "utf8")
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+      const diagnostic = [output.stderr, output.stdout].filter(Boolean).join("\n").trim()
+      if (/^DDGSException: DDGSException\(['"]No results found\.['"]\)\s*$/.test(diagnostic)) return []
+      throw new Error(`ddgs did not produce search results: ${diagnostic || "no output from ddgs"}`, { cause: error })
+    }
+    return JSON.parse(content) as Result[]
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
@@ -72,7 +82,7 @@ export default {
             let content = result.body
             try {
               const extracted = await run(["extract", "-u", result.href, "-f", "text_markdown"], signal)
-              content = extracted.replace(/^URL:\s.*\n\n/, "").trim() || content
+              content = extracted.stdout.replace(/^URL:\s.*\n\n/, "").trim() || content
             } catch (error) {
               if (signal.aborted) throw error
             }
