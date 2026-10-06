@@ -23,7 +23,7 @@ const excluded = new Set([
 
 function run(args: string[], signal: AbortSignal): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const process = spawn("ddgs", args, { signal, stdio: ["ignore", "pipe", "pipe"] })
+    const process = spawn("ddgs", args, { signal: AbortSignal.any([signal, AbortSignal.timeout(20000)]), stdio: ["ignore", "pipe", "pipe"] })
     let output = ""
     let error = ""
     process.stdout.setEncoding("utf8")
@@ -38,12 +38,22 @@ function run(args: string[], signal: AbortSignal): Promise<{ stdout: string; std
   })
 }
 
-export async function search(query: string, signal: AbortSignal, execute = run): Promise<Result[]> {
+function allowed(result: Result): boolean {
+  try {
+    const url = new URL(result.href)
+    return ["http:", "https:"].includes(url.protocol) && ![...excluded].some((site) => {
+      return url.hostname === site || url.hostname.endsWith(`.${site}`)
+    })
+  } catch {
+    return false
+  }
+}
+
+async function attempt(query: string, backend: string, signal: AbortSignal, execute: typeof run): Promise<Result[]> {
   const directory = await mkdtemp(join(tmpdir(), "opencode-ddgs-"))
   try {
     const path = join(directory, "results.json")
-    const exclusions = [...excluded].map((site) => `-site:${site}`).join(" ")
-    const output = await execute(["text", "-q", `${query} ${exclusions}`, "-m", "3", "-b", "auto", "-o", path], signal)
+    const output = await execute(["text", "-q", query, "-m", "10", "-b", backend, "-o", path], signal)
     signal.throwIfAborted()
     let content: string
     try {
@@ -54,10 +64,27 @@ export async function search(query: string, signal: AbortSignal, execute = run):
       if (/^DDGSException: DDGSException\(['"]No results found\.['"]\)\s*$/.test(diagnostic)) return []
       throw new Error(`ddgs did not produce search results: ${diagnostic || "no output from ddgs"}`, { cause: error })
     }
-    return JSON.parse(content) as Result[]
+    return (JSON.parse(content) as Result[]).filter(allowed).slice(0, 3)
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
+}
+
+export async function search(query: string, signal: AbortSignal, execute = run): Promise<Result[]> {
+  const errors: Error[] = []
+  for (const backend of ["auto", "brave", "yahoo"]) {
+    signal.throwIfAborted()
+    try {
+      const results = await attempt(query, backend, signal, execute)
+      if (results.length) return results
+    } catch (error) {
+      signal.throwIfAborted()
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") throw error
+      errors.push(new Error(`${backend}: ${error instanceof Error ? error.message : String(error)}`, { cause: error }))
+    }
+  }
+  if (errors.length) throw new AggregateError(errors, `DDGS search failed: ${errors.map((error) => error.message).join("; ")}`)
+  return []
 }
 
 export default {
@@ -69,16 +96,7 @@ export default {
         name: "Local ddgs",
         async execute({ query }, { signal }) {
           const results = await search(query, signal)
-          return Promise.all(results.filter((result) => {
-            try {
-              return ![...excluded].some((site) => {
-                const hostname = new URL(result.href).hostname
-                return hostname === site || hostname.endsWith(`.${site}`)
-              })
-            } catch {
-              return false
-            }
-          }).map(async (result) => {
+          return Promise.all(results.map(async (result) => {
             let content = result.body
             try {
               const extracted = await run(["extract", "-u", result.href, "-f", "text_markdown"], signal)

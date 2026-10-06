@@ -59,3 +59,63 @@ test("does not turn cancellation into empty results", async () => {
     return { stdout: "DDGSException: DDGSException('No results found.')", stderr: "" }
   })).rejects.toThrow()
 })
+
+test("tries another backend when the first returns no results", async () => {
+  const backends: string[] = []
+  const results = [{ title: "OpenChamber", href: "https://github.com/openchamber/openchamber", body: "Source" }]
+  expect(await search("OpenChamber github markdown renderer", signal, async (args) => {
+    backends.push(args[args.indexOf("-b") + 1])
+    expect(args[args.indexOf("-q") + 1]).toBe("OpenChamber github markdown renderer")
+    if (backends.length === 1) return { stdout: "DDGSException: DDGSException('No results found.')", stderr: "" }
+    await writeFile(args[args.indexOf("-o") + 1], JSON.stringify(results))
+    return { stdout: "", stderr: "" }
+  })).toEqual(results)
+  expect(backends).toEqual(["auto", "brave"])
+})
+
+test("recovers from a transient backend failure and cleans up every attempt", async () => {
+  const directories: string[] = []
+  const results = [{ title: "Documentation", href: "https://opencode.ai/v2/docs/", body: "Docs" }]
+  expect(await search("documentation", signal, async (args) => {
+    const path = args[args.indexOf("-o") + 1]
+    directories.push(dirname(path))
+    if (directories.length === 1) throw new Error("backend timed out")
+    await writeFile(path, JSON.stringify(results))
+    return { stdout: "", stderr: "" }
+  })).toEqual(results)
+  for (const directory of directories) await expect(access(directory)).rejects.toThrow()
+})
+
+test("filters excluded domains and unsafe URLs without reducing the query", async () => {
+  const results = [
+    { title: "Excluded", href: "https://old.reddit.com/post", body: "Post" },
+    { title: "Unsafe", href: "javascript:alert(1)", body: "Unsafe" },
+    { title: "Invalid", href: "not a URL", body: "Invalid" },
+    ...Array.from({ length: 4 }, (_, index) => ({ title: `Result ${index}`, href: `https://example.com/${index}`, body: "Result" })),
+  ]
+  expect(await search("documentation", signal, async (args) => {
+    expect(args[args.indexOf("-q") + 1]).toBe("documentation")
+    expect(args[args.indexOf("-m") + 1]).toBe("10")
+    await writeFile(args[args.indexOf("-o") + 1], JSON.stringify(results))
+    return { stdout: "", stderr: "" }
+  })).toEqual(results.slice(3, 6))
+})
+
+test("bounds empty-result fallback attempts", async () => {
+  const backends: string[] = []
+  expect(await search("no matches", signal, async (args) => {
+    backends.push(args[args.indexOf("-b") + 1])
+    await writeFile(args[args.indexOf("-o") + 1], "[]")
+    return { stdout: "", stderr: "" }
+  })).toEqual([])
+  expect(backends).toEqual(["auto", "brave", "yahoo"])
+})
+
+test("does not retry when the ddgs executable is missing", async () => {
+  let attempts = 0
+  await expect(search("documentation", signal, async () => {
+    attempts += 1
+    throw Object.assign(new Error("spawn ddgs ENOENT"), { code: "ENOENT" })
+  })).rejects.toThrow("spawn ddgs ENOENT")
+  expect(attempts).toBe(1)
+})
