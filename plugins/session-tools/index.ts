@@ -3,6 +3,7 @@ import { OpenCode } from "@opencode/client";
 import { Service } from "@opencode/client/service";
 import { renderSessionBlocks, chunkBlocks } from "./render.ts";
 import { modelContextTokens } from "./context.ts";
+import { currentServerEndpoint } from "./endpoint.ts";
 
 const DEFAULT_MODEL = { providerID: "anthropic", id: "claude-haiku-4-5" };
 const PER_PART_TRUNCATION = 4000;
@@ -105,7 +106,7 @@ export default {
           const scopeLabel = allProjects
             ? "all projects"
             : shortenHome(ctx.location.project.canonical);
-          const endpoint = await Service.discover();
+          const endpoint = currentServerEndpoint() ?? (await Service.discover());
           if (!endpoint)
             throw new Error("OpenCode background service not found");
           const client = OpenCode.make({
