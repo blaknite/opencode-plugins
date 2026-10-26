@@ -6,6 +6,7 @@ Personal OpenCode plugins. The `v2` branch contains the V2 implementations; `mai
 
 - **session-tools**: List recorded sessions and extract relevant context from another session using a model request.
 - **github-pr**: Watch GitHub PR reviews, comments, checks, merges, and closures from an OpenCode session. Requires an authenticated `gh` CLI. See [its README](plugins/github-pr/README.md).
+- **buildkite-build**: Watch Buildkite builds for blocked, failing, and terminal states using the authenticated `bk` CLI. See [its README](plugins/buildkite-build/README.md).
 - **jev**: Delegate structured decisions to TypeSafe's hosted Jev API. Requires a separately configured API key. See [its README](plugins/jev/README.md).
 - **ddgs**: Register a DuckDuckGo websearch provider with page extraction. Requires the `ddgs` Python CLI on the OpenCode service's PATH.
 
@@ -25,7 +26,8 @@ Add the plugin directories to `plugins` in your existing global `~/.config/openc
 {
   "plugins": [
     "/path/to/opencode-plugins/plugins/session-tools",
-    "/path/to/opencode-plugins/plugins/github-pr",
+     "/path/to/opencode-plugins/plugins/github-pr",
+     "/path/to/opencode-plugins/plugins/buildkite-build",
     "/path/to/opencode-plugins/plugins/jev",
     "/path/to/opencode-plugins/integrations/ddgs"
   ]
